@@ -1672,7 +1672,9 @@ int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms,
 #endif
 
   if (ms.map_epoch > sb.current_epoch) {
-    cerr << "ERROR: Export map_epoch " << ms.map_epoch << " > osd epoch " << sb.current_epoch << std::endl;
+    cerr << "ERROR: Export PG's map_epoch " << ms.map_epoch << " > OSD's epoch " << sb.current_epoch << std::endl;
+    cerr << "The OSD you are using is older than the exported PG" << std::endl;
+    cerr << "Either use another OSD or join selected OSD to cluster to update it first" << std::endl;
     return -EINVAL;
   }
 
@@ -1708,8 +1710,37 @@ int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms,
     }
   }
 
+#if 0
+  // We can never be sure with only the single osd being imported to whether
+  // any of this pg data will provide any up to data objects.
+  OSDMap cleanmap;
+  bufferlist cleanmap_bl;
+  int ret = get_osdmap(store, ms.info.history.last_epoch_clean, cleanmap,
+                       cleanmap_bl);
+  if (ret != 0) {
+     if (!force) {
+      cerr << "No OSDMap for last_epoch_clean " << ms.info.history.last_epoch_clean << std::endl;
+      cerr << "WARNING: You can use --force to to import anyway, but this could corrupt existing data" << std::endl;
+      return -EOPNOTSUPP;
+     }
+     // XXX: Determine oldest_map_epoch instead here
+     ms.info.history_last_epoch_clear = sb.current_epoch;
+  }
+#endif
+
+  // if (debug)
+  cerr << "Import pgid " << ms.info.pgid << std::endl;
+  cerr << "Clearing past_intervals " << ms.past_intervals << std::endl;
+  cerr << "Zero same_interval_since " << ms.info.history.same_interval_since << std::endl;
+
+  // Let osd recompute past_intervals and same_interval_since
   ms.past_intervals.clear();
-  ms.info.history.same_interval_since = ms.map_epoch = sb.current_epoch;
+  ms.info.history.same_interval_since =  0;
+
+  // if (debug)
+  cerr << "Changing pg epoch " << ms.map_epoch << " to " << sb.current_epoch << std::endl;
+
+  ms.map_epoch = sb.current_epoch;
 
   return 0;
 }
