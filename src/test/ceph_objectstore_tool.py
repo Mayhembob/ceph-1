@@ -528,13 +528,20 @@ def main(argv):
     cmd = (CFSD_PREFIX + "--op export --pgid {pg} --file -").format(osd=ONEOSD, pg=ONEPG)
     ERRORS += test_failure_tty(cmd, "stdout is a tty and no --file filename specified")
 
+    # Prep a valid export file for import failure tests
     OTHERFILE = "/tmp/foo.{pid}".format(pid=pid)
-    foofd = open(OTHERFILE, "w")
-    foofd.close()
+    cmd = (CFSD_PREFIX + "--op export --pgid {pg} --file {file}").format(osd=ONEOSD, pg=ONEPG, file=OTHERFILE)
+    logging.debug(cmd)
+    call(cmd, shell=True, stdout=nullfd, stderr=nullfd)
 
-    # On import can't specify a PG
-    cmd = (CFSD_PREFIX + "--op import --pgid {pg} --file {FOO}").format(osd=ONEOSD, pg=ONEPG, FOO=OTHERFILE)
-    ERRORS += test_failure(cmd, "--pgid option invalid with import")
+    # On import can't specify a PG with a non-existent pool
+    cmd = (CFSD_PREFIX + "--op import --pgid {pg} --file {file}").format(osd=ONEOSD, pg="10.0", file=OTHERFILE)
+    ERRORS += test_failure(cmd, "Can't specify a different pgid pool, must be")
+
+    # On import can't specify a PG with a bad seed
+    TMPPG="{pool}.80".format(pool=REPID)
+    cmd = (CFSD_PREFIX + "--op import --pgid {pg} --file {file}").format(osd=ONEOSD, pg=TMPPG, file=OTHERFILE)
+    ERRORS += test_failure(cmd, "Illegal pgid, the seed is larger than current pg_num")
 
     os.unlink(OTHERFILE)
     cmd = (CFSD_PREFIX + "--op import --file {FOO}").format(osd=ONEOSD, FOO=OTHERFILE)

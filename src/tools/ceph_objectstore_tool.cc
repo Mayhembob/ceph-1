@@ -1564,7 +1564,7 @@ int get_object(ObjectStore *store, coll_t coll, bufferlist &bl, OSDMap &curmap,
     }
      
     if (coll_pgid.pgid != pgid) {
-      cerr << "Skipping object '" << ob.hoid << "' which no longer belongs in exported pg" << std::endl;
+      cerr << "Skipping object '" << ob.hoid << "' which belongs in pg " << pgid << std::endl;
       *skipped_objects = true;
       skip_object(bl);
       return 0;
@@ -1625,13 +1625,16 @@ int get_object(ObjectStore *store, coll_t coll, bufferlist &bl, OSDMap &curmap,
 }
 
 int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms,
-    const OSDSuperblock& sb, OSDMap& curmap)
+    const OSDSuperblock& sb, OSDMap& curmap, spg_t pgid)
 {
   bufferlist::iterator ebliter = bl.begin();
   ms.decode(ebliter);
+  spg_t old_pgid = ms.info.pgid;
+  ms.info.pgid = pgid;
 
 #if DIAGNOSTIC
   Formatter *formatter = new JSONFormatter(true);
+  cout << "export pgid " << old_pgid << std::endl;
   cout << "struct_v " << (int)ms.struct_ver << std::endl;
   cout << "map epoch " << ms.map_epoch << std::endl;
 
@@ -1704,10 +1707,24 @@ int get_pg_metadata(ObjectStore *store, bufferlist &bl, metadata_section &ms,
 
     // If OSDMap is available check for splits
     if (ms.osdmap.get_epoch()) {
-      spg_t parent(ms.info.pgid);
-      if (parent.is_split(ms.osdmap.get_pg_num(ms.info.pgid.pgid.m_pool),
-          curmap.get_pg_num(ms.info.pgid.pgid.m_pool), NULL)) {
-        cerr << "WARNING: Split occurred, some objects may be ignored" << std::endl;
+      unsigned old_pg_num = ms.osdmap.get_pg_num(pgid.pgid.pool());
+      unsigned new_pg_num = curmap.get_pg_num(pgid.pgid.pool());
+
+      if (old_pgid.pgid.ps() >= old_pg_num) {
+        cerr << "FATAL: pgid invalid for original map epoch" << std::endl;
+        return -EFAULT;
+      }
+      if (pgid.pgid.ps() >= new_pg_num) {
+        cerr << "Illegal pgid, the seed is larger than current pg_num" << std::endl;
+        return -EINVAL;
+      }
+      if (pgid.pgid.ps() >= old_pg_num) {
+        cout << "NOTICE: Post split pgid specified" << std::endl;
+      } else {
+        spg_t parent(pgid);
+        if (parent.is_split(old_pg_num, new_pg_num, NULL)) {
+          cerr << "WARNING: Split occurred, some objects may be ignored" << std::endl;
+        }
       }
     }
   }
@@ -1900,7 +1917,7 @@ void filter_divergent_priors(spg_t import_pgid, const OSDMap &curmap,
   }
 }
 
-int do_import(ObjectStore *store, OSDSuperblock& sb, bool force)
+int do_import(ObjectStore *store, OSDSuperblock& sb, bool force, string pgidstr)
 {
   bufferlist ebl;
   pg_info_t info;
@@ -1937,6 +1954,22 @@ int do_import(ObjectStore *store, OSDSuperblock& sb, bool force)
   pg_begin pgb;
   pgb.decode(ebliter);
   spg_t pgid = pgb.pgid;
+  spg_t orig_pgid = pgid;
+
+  if (pgidstr.length()) {
+    spg_t user_pgid;
+
+    bool ok = user_pgid.parse(pgidstr.c_str());
+    // This succeeded in main() already
+    assert(ok);
+    if (pgid != user_pgid) {
+      if (pgid.pool() != user_pgid.pool()) {
+        cerr << "Can't specify a different pgid pool, must be " << pgid.pool() << std::endl;
+        return -EINVAL;
+      }
+      pgid = user_pgid;
+    }
+  }
 
   if (!pgb.superblock.cluster_fsid.is_zero()
       && pgb.superblock.cluster_fsid != sb.cluster_fsid) {
@@ -2010,7 +2043,11 @@ int do_import(ObjectStore *store, OSDSuperblock& sb, bool force)
     delete t;
   }
 
-  cout << "Importing pgid " << pgid << std::endl;
+  cout << "Importing pgid " << pgid;
+  if (orig_pgid != pgid) {
+    cout << " exported as " << orig_pgid;
+  }
+  cout << std::endl;
 
   bool done = false;
   bool found_metadata = false;
@@ -2031,7 +2068,7 @@ int do_import(ObjectStore *store, OSDSuperblock& sb, bool force)
       if (ret) return ret;
       break;
     case TYPE_PG_METADATA:
-      ret = get_pg_metadata(store, ebl, ms, sb, curmap);
+      ret = get_pg_metadata(store, ebl, ms, sb, curmap, pgid);
       if (ret) return ret;
       found_metadata = true;
       break;
@@ -2819,11 +2856,6 @@ int main(int argc, char **argv)
     }
   }
 
-  if (op == "import" && pgidstr.length()) {
-    cerr << "--pgid option invalid with import" << std::endl;
-    myexit(1);
-  }
-
   if (pgidstr.length() && !pgid.parse(pgidstr.c_str())) {
     cerr << "Invalid pgid '" << pgidstr << "' specified" << std::endl;
     myexit(1);
@@ -3085,7 +3117,7 @@ int main(int argc, char **argv)
   if (op == "import") {
 
     try {
-      ret = do_import(fs, superblock, force);
+      ret = do_import(fs, superblock, force, pgidstr);
     }
     catch (const buffer::error &e) {
       cerr << "do_import threw exception error " << e.what() << std::endl;
