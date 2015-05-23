@@ -224,8 +224,7 @@ def check_journal(jsondict):
         logging.error("Key 'entries' not in dump-journal output")
         errors += 1
     elif len(jsondict['entries']) == 0:
-        logging.warning("No entries in journal found, probably a problem")
-        errors += 1
+        logging.info("No entries in journal found")
     else:
         errors += check_journal_entries(jsondict['entries'])
     return errors
