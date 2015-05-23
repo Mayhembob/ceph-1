@@ -286,6 +286,35 @@ def check_transaction_ops(ops, enum, tnum):
     return errors
 
 
+def test_dump_journal(CFSD_PREFIX, osds):
+    ERRORS = 0
+    pid = os.getpid()
+    TMPFILE = r"/tmp/tmp.{pid}".format(pid=pid)
+
+    for osd in osds:
+        # Test --op dump-journal by loading json
+        cmd = (CFSD_PREFIX + "--op dump-journal --format json").format(osd=osd)
+        logging.debug(cmd)
+        tmpfd = open(TMPFILE, "w")
+        ret = call(cmd, shell=True, stdout=tmpfd)
+        if ret != 0:
+            logging.error("Bad exit status {ret} from {cmd}".format(ret=ret, cmd=cmd))
+            ERRORS += 1
+            continue
+        tmpfd.close()
+        tmpfd = open(TMPFILE, "r")
+        jsondict = json.load(tmpfd)
+        tmpfd.close()
+        os.unlink(TMPFILE)
+
+        journal_errors = check_journal(jsondict)
+        if journal_errors is not 0:
+            logging.error(jsondict)
+        ERRORS += journal_errors
+
+    return ERRORS
+
+
 CEPH_DIR = "ceph_objectstore_tool_dir"
 CEPH_CONF = os.path.join(CEPH_DIR, 'ceph.conf')
 
@@ -578,25 +607,9 @@ def main(argv):
     OSDS = get_osds(ALLPGS[0], OSDDIR)
     osd = OSDS[0]
 
-    # Test --op dump-journal by loading json
-    print "Test --op dump-journal"
-    cmd = (CFSD_PREFIX + "--op dump-journal --format json").format(osd=osd)
-    logging.debug(cmd)
-    tmpfd = open(TMPFILE, "w")
-    ret = call(cmd, shell=True, stdout=tmpfd)
-    if ret != 0:
-        logging.error("Bad exit status {ret} from {cmd}".format(ret=ret, cmd=cmd))
-        ERRORS += 1
-    tmpfd.close()
-    tmpfd = open(TMPFILE, "r")
-    jsondict = json.load(tmpfd)
-    tmpfd.close()
-    os.unlink(TMPFILE)
-
-    journal_errors = check_journal(jsondict)
-    if journal_errors is not 0:
-        logging.error(jsondict)
-    ERRORS += journal_errors
+    print "Test all --op dump-journal"
+    ALLOSDS = [f for f in os.listdir(OSDDIR) if os.path.isdir(os.path.join(OSDDIR, f)) and string.find(f, "osd") == 0]
+    ERRORS += test_dump_journal(CFSD_PREFIX, ALLOSDS)
 
     # Test --op list and generate json for all objects
     print "Test --op list variants"
@@ -1066,6 +1079,10 @@ def main(argv):
                     ERRORS += 1
     else:
         logging.warning("SKIPPING CHECKING IMPORT DATA DUE TO PREVIOUS FAILURES")
+
+    print "Test all --op dump-journal again"
+    ALLOSDS = [f for f in os.listdir(OSDDIR) if os.path.isdir(os.path.join(OSDDIR, f)) and string.find(f, "osd") == 0]
+    ERRORS += test_dump_journal(CFSD_PREFIX, ALLOSDS)
 
     vstart(new=False)
     wait_for_health()
