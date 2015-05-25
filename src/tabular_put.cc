@@ -22,9 +22,14 @@
  * oid:  name of the object holding the data for this partition.
  *
  * TODO: a table split needs to have a range.
+ *        encode/decode the range.
  */
 struct table_split {
   std::string oid;
+  
+  // added a range for the numbers the table is accepting
+  uint64_t lower_bound;
+  uint64_t upper_bound;
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
@@ -189,14 +194,77 @@ static void usage(const char *e)
   fprintf(stdout, "%s -p pool\n", e);
 }
 
+void daemon_func(table& table) {
+  table_state state = table.state;
+  while (1) {
+    sleep(1);
+    
+    // need to update table state here
+    
+    // how to get the state? should the head of the table
+    // be passed as an argument to daemon_func()?      
+    // what should be the type of storage_object?
+    // what should be the types of header and error?
+    
+    for (unsigned i = 0; i < state.splits.size(); i++) {
+      // how exactly to access the storage object?
+      storage_object = state.splits[i].oid; 
+      
+      // getting the header from the storage object.
+      storage_object.omap_get_header(header, error);
+      
+      // if the split_required flag is set, then create a new
+      // object and copy over part of the keys.
+      if(header.split_required) {
+        
+        // create a new object and add it to the table
+        uuid = boost::uuids::random_generator()();
+        uuid_ss.str("");
+        uuid_ss << state.unique_id << "." << uuid;
+
+        table_split split;
+        split.oid = uuid_ss.str(); // the oid of the new object
+        
+        state.splits.push_back(split);
+
+        // update table metadata to include new object
+        bufferlist bl;
+        ::encode(state, bl);
+        int ret = ioctx.write_full(table, bl);
+        assert(ret == 0);
+        
+        // copy over the data
+        map<std::string, bufferlist> data;
+        uint64_t last_split = split_points.back();
+        std::string last_split_str = utostr(last_split);
+        
+        storage_object.omap_get_vals(last_split_str
+        1000,
+        data,
+        error);
+        
+        
+        
+        
+        // let the old object know it can delete the range that
+        // has been copied over.
+        
+        // split has been completed, reset the flag
+        storage_object.header.split_required = false;
+      }
+    }
+  }    
+}
+
 int main(int argc, char **argv)
 {
   std::string pool, objname;
   bool create = false;
   bool splitter = false;
+  bool daemon_enabled = false;
 
   while (1) {
-    int c = getopt(argc, argv, "p:o:cs");
+    int c = getopt(argc, argv, "p:o:csd");
     if (c == -1)
       break;
     switch (c) {
@@ -211,6 +279,9 @@ int main(int argc, char **argv)
         break;
       case 's':
         splitter = true;
+        break;
+      case 'd':
+        daemon_enabled = true;
         break;
       default:
         usage(argv[0]);
@@ -267,6 +338,8 @@ int main(int argc, char **argv)
     // TODO: range is -inf,+inf
     table_split split;
     split.oid = uuid_ss.str();
+    split.lower_bound = 0;
+    split.upper_bound = (uint64_t)-1;
 
     // add the split to the table
     s.splits.push_back(split);
@@ -279,6 +352,16 @@ int main(int argc, char **argv)
     assert(ret == 0);
 
     return 0;
+  }
+  
+  /*
+   * This daemon is responsible for monitoring the objects, which it
+   * gets access to through table_split. When an object needs a split
+   * the daemon will create a new object and copy over half of the old 
+   * objects range. 
+   */
+  if (daemon_enabled) {
+      std::thread daemon_thread(daemon_func);
   }
 
   /*

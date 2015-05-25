@@ -55,6 +55,8 @@ struct cls_tabular_header {
 
   uint64_t lower_bound_seen;
   uint64_t upper_bound_seen;
+  
+  bool split_required;
 
   std::vector<uint64_t> split_points;
 
@@ -63,6 +65,7 @@ struct cls_tabular_header {
     upper_bound = (uint64_t)-1;
     total_entries = 0;
     effective_entries = 0;
+    split_required = false;
   }
 
   void encode(bufferlist& bl) const {
@@ -215,6 +218,7 @@ static int cls_tabular_put(cls_method_context_t hctx,
   //
   if (header.effective_entries > 1000) {
     uint64_t split_point = header.lower_bound_seen + ((header.upper_bound_seen -  header.lower_bound_seen) / 2);
+    split_required = true;
     CLS_ERR("cls_tabular_put: split: entries %lu lower %lu upper %lu split %lu\n",
         header.effective_entries,
         header.lower_bound_seen,
