@@ -257,24 +257,6 @@ static int cls_tabular_put(cls_method_context_t hctx,
     return ret;
   }
 
-<<<<<<< Updated upstream
-  // if the number of entries in the range that we are accepting exceeds 1000
-  // then we create a split.
-  // 
-  // We want to reject future writes by updating 'lower bound' and 'upper
-  // bound'. And also want to update the seen bounds for the new valid range.
-  //
-  // Insert split point into the object header metadata.
-  //
-  if (header.effective_entries > 1000) {
-    uint64_t split_point = header.lower_bound_seen + ((header.upper_bound_seen -  header.lower_bound_seen) / 2);
-    split_required = true;
-    CLS_ERR("cls_tabular_put: split: entries %lu lower %lu upper %lu split %lu\n",
-        header.effective_entries,
-        header.lower_bound_seen,
-        header.upper_bound_seen,
-        split_point);
-=======
   if (header.entries > 1000) {
     split_range split;
     split.upper =
@@ -285,7 +267,6 @@ static int cls_tabular_put(cls_method_context_t hctx,
     header.lower_bound = split_point;
     header.split_points.push_back(split);
     header.entries = 0;
->>>>>>> Stashed changes
   }
 
   ret = write_header(hctx, header);
