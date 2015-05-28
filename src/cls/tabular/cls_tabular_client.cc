@@ -16,3 +16,14 @@ void cls_tabular_put(librados::ObjectWriteOperation& op,
   ::encode(call, in);
   op.exec("tabular", "put", in);
 }
+
+void cls_tabular_set_range(librados::ObjectWriteOperation& op,
+    uint64_t min, uint64_t max)
+{
+  librados::bufferlist in;
+  cls_tabular_set_range_op call;
+  call.min = min;
+  call.max = max;
+  ::encode(call, in);
+  op.exec("tabular", "set_range", in);
+}

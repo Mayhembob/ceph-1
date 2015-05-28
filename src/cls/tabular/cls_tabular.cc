@@ -12,6 +12,7 @@ CLS_NAME(tabular)
 
 cls_handle_t h_class;
 cls_method_handle_t h_tabular_put;
+cls_method_handle_t h_tabular_set_range;
 
 /*
  * Convert string into numeric value.
@@ -70,49 +71,34 @@ struct split_with_data {
  * splitting is easy.
  */
 struct cls_tabular_header {
-  uint64_t total_entries;      // total entries, including non-gc entries
-  uint64_t effective_entries;  // entries in a valid range for this object
-
-  // range we are accepting
+  uint64_t entries;
   uint64_t lower_bound;
   uint64_t upper_bound;
-
-  uint64_t lower_bound_seen;
-  uint64_t upper_bound_seen;
-  
-  bool split_required;
+  bool initialized;
 
   std::vector<split_range> split_points;
   std::vector<split_range> splits_in_progress;
 
   cls_tabular_header() {
-    lower_bound = 0;
-    upper_bound = (uint64_t)-1;
-    total_entries = 0;
-    effective_entries = 0;
-    split_required = false;
+    initialized = false;
   }
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(total_entries, bl);
-    ::encode(effective_entries, bl);
+    ::encode(entries, bl);
     ::encode(lower_bound, bl);
     ::encode(upper_bound, bl);
-    ::encode(lower_bound_seen, bl);
-    ::encode(upper_bound_seen, bl);
+    ::encode(initialized, bl);
     ::encode(split_points, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
     DECODE_START(1, bl);
-    ::decode(total_entries, bl);
-    ::decode(effective_entries, bl);
+    ::decode(entries, bl);
     ::decode(lower_bound, bl);
     ::decode(upper_bound, bl);
-    ::decode(lower_bound_seen, bl);
-    ::decode(upper_bound_seen, bl);
+    ::decode(initialized, bl);
     ::decode(split_points, bl);
     DECODE_FINISH(bl);
   }
@@ -206,6 +192,14 @@ static int cls_tabular_put(cls_method_context_t hctx,
   }
 
   /*
+   * Partitions are initialized using the cls_tabular_set_range method.
+   */
+  if (!header.initialized) {
+    CLS_ERR("ERROR: objects must be initialized");
+    return -EINVAL;
+  }
+
+  /*
    * Entries is what is going to go into the key/value store. Effectively the
    * set of entries we are going to accept. Currently we don't accept partial
    * puts.
@@ -233,20 +227,7 @@ static int cls_tabular_put(cls_method_context_t hctx,
       return -ERANGE;
     }
 
-    // initialize 'seen' bounds
-    if (header.total_entries == 0) {
-      header.lower_bound_seen = key_val;
-      header.upper_bound_seen = key_val;
-    }
-
-    header.total_entries++;
-    header.effective_entries++;
-
-    // update 'seen' bounds
-    if (key_val < header.lower_bound_seen)
-      header.lower_bound_seen = key_val;
-    if (key_val > header.upper_bound_seen)
-      header.upper_bound_seen = key_val;
+    header.entries++;
   }
 
   // insert the entries into our database. we know at this point that they are
@@ -258,20 +239,65 @@ static int cls_tabular_put(cls_method_context_t hctx,
   }
 
   if (header.entries > 1000) {
-    split_range split;
-    split.upper =
+    uint64_t split_point =
       header.lower_bound + ((header.upper_bound - header.lower_bound) / 2);
-    split.lower = header.lower_bound;
     CLS_ERR("split created: lb=%llu up=%llu sp=%llu entries=%d\n",
         header.lower_bound, header.upper_bound, split_point, header.entries);
     header.lower_bound = split_point;
-    header.split_points.push_back(split);
+    header.split_points.push_back(split_point);
     header.entries = 0;
   }
 
   ret = write_header(hctx, header);
   if (ret < 0) {
     CLS_ERR("cls_tabular_put: failed to write header");
+    return ret;
+  }
+
+  return 0;
+}
+
+static int cls_tabular_set_range(cls_method_context_t hctx,
+    bufferlist *in, bufferlist *out)
+{
+  cls_tabular_set_range_op op;
+  try {
+    bufferlist::iterator iter = in->begin();
+    ::decode(op, iter);
+  } catch (buffer::error& err) {
+    CLS_ERR("ERROR: cls_tabluar_set_range: failed to decode op");
+    return -EINVAL;
+  }
+
+  /*
+   * We assume that a range can be set only on an object that doesn't exist,
+   * meaning that we don't want to change the range on any object that is
+   * already holding data. This is used to set the range for a new table's
+   * first object, or could be used to initialize a fixed set of partitions.
+   * This could be relaxed later if there was a need.
+   */
+  int ret = cls_cxx_stat(hctx, NULL, NULL);
+  if (ret < 0 && ret != -ENOENT) {
+    CLS_ERR("ERROR: cls_tabular_set_range: failed to stat %d", ret);
+    return ret;
+  }
+
+  cls_tabular_header header;
+  ret = read_header(hctx, header);
+  if (ret < 0) {
+    CLS_ERR("ERROR: cls_tabular_set_range: failed to read header %d", ret);
+    return ret;
+  }
+
+  // what is being accepted
+  header.lower_bound = op.min;
+  header.upper_bound = op.max;
+  header.entries = 0;
+  header.initialized = true;
+
+  ret = write_header(hctx, header);
+  if (ret < 0) {
+    CLS_ERR("ERROR: cls_tabular_set_range: failed to write header %d", ret);
     return ret;
   }
 
@@ -287,4 +313,8 @@ void __cls_init()
   cls_register_cxx_method(h_class, "put",
       CLS_METHOD_RD | CLS_METHOD_WR,
       cls_tabular_put, &h_tabular_put);
+
+  cls_register_cxx_method(h_class, "set_range",
+      CLS_METHOD_RD | CLS_METHOD_WR,
+      cls_tabular_set_range, &h_tabular_set_range);
 }

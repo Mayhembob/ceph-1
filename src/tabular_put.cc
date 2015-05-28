@@ -12,9 +12,39 @@
 #include <boost/uuid/uuid.hpp>            // uuid class
 #include <boost/uuid/uuid_generators.hpp> // generators
 #include <boost/uuid/uuid_io.hpp>         // streaming operators etc.
+#include <boost/lexical_cast.hpp>
+#include <mutex>
 #include "include/types.h"
 #include "include/rados/librados.hpp"
 #include "cls/tabular/cls_tabular_client.h"
+
+/*
+ *  * Convert value into zero-padded string for omap comparisons.
+ *   */
+static inline std::string u64tostr(uint64_t value)
+{
+  std::stringstream ss;
+  ss << std::setw(20) << std::setfill('0') << value;
+  return ss.str();
+}
+
+/*
+ * Convert string into numeric value.
+ */
+static inline int strtou64(string value, uint64_t *out)
+{
+  uint64_t v;
+ 
+  try {
+    v = boost::lexical_cast<uint64_t>(value);
+  } catch (boost::bad_lexical_cast &) {
+    return -EIO;
+  }
+ 
+  *out = v;
+  return 0;
+}
+
 
 /*
  * This represents a partition of a table.
@@ -26,20 +56,22 @@
  */
 struct table_split {
   std::string oid;
-  
-  // added a range for the numbers the table is accepting
   uint64_t lower_bound;
   uint64_t upper_bound;
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
     ::encode(oid, bl);
+    ::encode(lower_bound, bl);
+    ::encode(upper_bound, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
     DECODE_START(1, bl);
     ::decode(oid, bl);
+    ::decode(lower_bound, bl);
+    ::decode(upper_bound, bl);
     DECODE_FINISH(bl);
   }
 };
@@ -101,10 +133,10 @@ struct table {
       ::decode(new_state, iter);
 
       if (state.seq == new_state.seq) {
-        // copy over
         for (unsigned i = 0; i < new_state.splits.size(); i++) {
           std::cout << "table " << head << ": split " << i << ": " << new_state.splits[i].oid << std::endl;
         }
+        state = new_state;
       }
     }
   }
@@ -145,34 +177,107 @@ struct table {
    * put a set of entries into object
    */
   int put(std::vector<std::string>& entries) {
-    librados::ObjectWriteOperation op;
-    cls_tabular_put(op, entries);
+    assert(entries.size() == 1);
 
-    /*
-     * Issue the "put" command on the "head" object.
-     *
-     * TODO: consult the table_state to figure out which object is responsible
-     * for the range that contains the key of the entry. Note that we might
-     * need to call this multiple times if the set of entries contains keys
-     * that need to be sent to different partitions.
-     */
-    int ret = ioctx.operate(head, &op);
-    if (ret < 0)
-      fprintf(stderr, "ret=%d e=%s\n", ret, strerror(-ret));
+    // we've hard coded into this for now the assumption that entries vector
+    // only ever contains one entry that we handle at a time.
+    uint64_t val;
+    int ret = strtou64(entries[0], &val);
     assert(ret == 0);
-    return 0;
+
+    bool simulated_split = false;
+
+    while (1) {
+
+      librados::ObjectWriteOperation op;
+      cls_tabular_put(op, entries);
+
+      // figure out which split owns this entry
+      bool target_found = false;
+      table_split target_split;
+      for (std::vector<table_split>::const_iterator it = state.splits.begin();
+          it != state.splits.end(); it++) {
+        const table_split& split = *it;
+        if (split.lower_bound <= val && val <= split.upper_bound) {
+          target_split = split;
+          target_found = true;
+          break;
+        }
+      }
+      assert(target_found);
+
+      int ret = ioctx.operate(target_split.oid, &op);
+      if (ret < 0) {
+        if (ret != -ERANGE) {
+          fprintf(stderr, "ret=%d e=%s\n", ret, strerror(-ret));
+          fflush(stderr);
+          exit(1);
+        }
+
+        fprintf(stdout, "tring again...\n");
+        fflush(stderr);
+        sleep(1);
+
+        if (!simulated_split) {
+          simulate_split();
+          simulated_split = true;
+        }
+
+        continue;
+      }
+      return 0;
+    }
+  }
+
+  /*
+   * The splitting daemon isn't completed yet, so we need a way to simulate
+   * splits. The dumbest thing to do is just to split everything when we see
+   * that one object was overloaded. We also don't do any data copying or
+   * clean-up.
+   */
+  void simulate_split() {
+
+    std::vector<table_split> new_splits;
+
+    assert(state.splits.size() > 0);
+
+    for (std::vector<table_split>::const_iterator it = state.splits.begin();
+        it != state.splits.end(); it++) {
+
+      const table_split& split = *it;
+
+      uint64_t split_point =
+        split.lower_bound + ((split.upper_bound - split.lower_bound) / 2);
+
+      // new split
+      boost::uuids::uuid uuid = boost::uuids::random_generator()();
+      std::stringstream uuid_ss;
+      uuid_ss << uuid;
+
+      table_split new_split;
+      new_split.oid = uuid_ss.str();
+      new_split.lower_bound = split.lower_bound;
+      new_split.upper_bound = split_point;
+      new_splits.push_back(new_split);
+
+      librados::ObjectWriteOperation op;
+      cls_tabular_set_range(op, new_split.lower_bound, new_split.upper_bound);
+      int ret = ioctx.operate(new_split.oid, &op);
+      assert(ret == 0);
+
+      // modified original
+      table_split orig_split = split;
+      orig_split.lower_bound = split_point;
+      new_splits.push_back(orig_split);
+    }
+
+    state.splits = new_splits;
+    bufferlist bl;
+    ::encode(state, bl);
+    int ret = ioctx.write_full(head, bl);
+    assert(ret == 0);
   }
 };
-
-/*
- *  * Convert value into zero-padded string for omap comparisons.
- *   */
-static inline std::string u64tostr(uint64_t value)
-{
-  std::stringstream ss;
-  ss << std::setw(20) << std::setfill('0') << value;
-  return ss.str();
-}
 
 static void open_ioctx(std::string &pool, librados::Rados &rados, librados::IoCtx &ioctx)
 {
@@ -335,11 +440,11 @@ int main(int argc, char **argv)
     uuid_ss << s.unique_id << "." << uuid;
 
     // create the split
-    // TODO: range is -inf,+inf
     table_split split;
     split.oid = uuid_ss.str();
     split.lower_bound = 0;
-    split.upper_bound = (uint64_t)-1;
+    split.upper_bound = UINT64_MAX;
+
 
     // add the split to the table
     s.splits.push_back(split);
@@ -349,6 +454,12 @@ int main(int argc, char **argv)
     bufferlist bl;
     ::encode(s, bl);
     int ret = ioctx.write_full(objname, bl);
+    assert(ret == 0);
+
+    // now create the first object and initialize its bounds to be unbounded
+    librados::ObjectWriteOperation op;
+    cls_tabular_set_range(op, split.lower_bound, split.upper_bound);
+    ret = ioctx.operate(split.oid, &op);
     assert(ret == 0);
 
     return 0;

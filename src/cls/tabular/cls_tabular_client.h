@@ -9,4 +9,6 @@
 void cls_tabular_put(librados::ObjectWriteOperation& op,
     std::vector<std::string>& entries);
 
+void cls_tabular_set_range(librados::ObjectWriteOperation& op,
+    uint64_t min, uint64_t max);
 #endif
