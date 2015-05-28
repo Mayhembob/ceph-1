@@ -31,6 +31,30 @@ static inline int strtou64(string value, uint64_t *out)
   return 0;
 }
 
+struct split_range {
+  uint64_t lower;
+  uint64_t upper;
+};
+
+struct split_with_data {
+  split_range split;
+  bufferedlist data;
+  
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(split, bl);
+    ::encode(data, bl);
+    ENCODE_FINISH(bl);
+  }
+  
+  void decode(bufferlist::iterator& bl) {
+    DECODE_START(1, bl);
+    ::decode(split, bl);
+    ::decode(data, bl);
+    DECODE_FINISH(bl);
+  }
+}
+
 /*
  * It's hard to track how many rows we actually have because we can't
  * distinguish between writes to new rows and row updates. To simplify things
@@ -58,7 +82,8 @@ struct cls_tabular_header {
   
   bool split_required;
 
-  std::vector<uint64_t> split_points;
+  std::vector<split_range> split_points;
+  std::vector<split_range> splits_in_progress;
 
   cls_tabular_header() {
     lower_bound = 0;
@@ -130,6 +155,29 @@ static int write_header(cls_method_context_t hctx, cls_tabular_header& header)
 }
 
 /*
+ * This interface allows a daemon to read a random split from 
+ * this object.
+ */
+static int cls_tabluar_get_split(cls_method_context_t hctx,
+bufferlist *in, bufferlist *out) {
+    
+  split_range split = split_points.pop();  
+  splits_in_progress.push(split);
+  
+  // read data in the range 
+  bufferlist data;
+  ret = cls_cxx_read(hctx, split.lower, split.upper, data);
+  
+  split_with_data split_data;
+  split_data.data = data;
+  split_data.split = split;
+    
+  out->append(split_data);
+    
+  return 0;
+}
+ 
+/*
  * This is how new entries are added to this object (partition).
  */
 static int cls_tabular_put(cls_method_context_t hctx,
@@ -166,6 +214,7 @@ static int cls_tabular_put(cls_method_context_t hctx,
 
   // for each entry sent by the client
   for (vector<string>::iterator it = op.entries.begin(); it != op.entries.end(); it++) {
+    
     std::string& key = *it;
 
     // key/value pair with empty byte array
@@ -208,6 +257,7 @@ static int cls_tabular_put(cls_method_context_t hctx,
     return ret;
   }
 
+<<<<<<< Updated upstream
   // if the number of entries in the range that we are accepting exceeds 1000
   // then we create a split.
   // 
@@ -224,6 +274,18 @@ static int cls_tabular_put(cls_method_context_t hctx,
         header.lower_bound_seen,
         header.upper_bound_seen,
         split_point);
+=======
+  if (header.entries > 1000) {
+    split_range split;
+    split.upper =
+      header.lower_bound + ((header.upper_bound - header.lower_bound) / 2);
+    split.lower = header.lower_bound;
+    CLS_ERR("split created: lb=%llu up=%llu sp=%llu entries=%d\n",
+        header.lower_bound, header.upper_bound, split_point, header.entries);
+    header.lower_bound = split_point;
+    header.split_points.push_back(split);
+    header.entries = 0;
+>>>>>>> Stashed changes
   }
 
   ret = write_header(hctx, header);
