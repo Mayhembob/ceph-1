@@ -3,6 +3,13 @@
 #include "cls/tabular/cls_tabular_client.h"
 #include "include/rados/librados.hpp"
 
+
+
+struct split_with_data {
+  split_range split;
+  //bufferedlist data;
+  std::map<std::string, ceph::bufferedlist> data;
+
 /*
  * Take a set of entries and prepare the operation such that when it is
  * executed it calls the "put" method on the "tabular" class.

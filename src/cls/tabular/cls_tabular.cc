@@ -39,7 +39,8 @@ struct split_range {
 
 struct split_with_data {
   split_range split;
-  bufferedlist data;
+  //bufferedlist data;
+  std::map<std::string, ceph::bufferedlist> data;
   
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
@@ -317,4 +318,8 @@ void __cls_init()
   cls_register_cxx_method(h_class, "set_range",
       CLS_METHOD_RD | CLS_METHOD_WR,
       cls_tabular_set_range, &h_tabular_set_range);
+      
+  cls_register_cxx_method(h_class, "get_split",
+      CLS_METHOD_RD,
+      cls_tabular_get_split, &h_tabular_get_split);
 }
