@@ -11,7 +11,8 @@ static void usage(const char *e)
 }
 
 int main(int argc, char **argv){
-  std:string table_str;
+  std::string table_str;
+  std::vector<uint64_t> finished_splits;
   
   while (1) {
     int c = getopt(argc, argv, "t:");
@@ -27,14 +28,15 @@ int main(int argc, char **argv){
     }
   }
   
-  // what is the type of the table? How do we convert
-  // the string to the table type?
-  something? table = new cls_tabular(table_str);
+  // somehow check the table that was passed as 
+  // a cmd line arg and see if it has any splits
+  
   
   while (1) {
     for (int i = 0; i < table.splits.size(); i++) {
       std::string storage_obj_str = splits[i].oid;
-      something? storage_obj = ...
+      librados::ObjectWriteOperation op;
+      cls_tabluar_get_split(op, finished_splits);
       
       // if there are pending splits
       if (storage_obj.split_points.size() != 0) {

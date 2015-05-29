@@ -33,28 +33,8 @@ static inline int strtou64(string value, uint64_t *out)
 }
 
 struct split_range {
-  uint64_t lower;
-  uint64_t upper;
-};
-
-struct split_with_data {
-  split_range split;
-  //bufferedlist data;
-  std::map<std::string, ceph::bufferedlist> data;
-  
-  void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
-    ::encode(split, bl);
-    ::encode(data, bl);
-    ENCODE_FINISH(bl);
-  }
-  
-  void decode(bufferlist::iterator& bl) {
-    DECODE_START(1, bl);
-    ::decode(split, bl);
-    ::decode(data, bl);
-    DECODE_FINISH(bl);
-  }
+  uint64_t min;
+  uint64_t max;
 }
 
 /*
@@ -78,7 +58,6 @@ struct cls_tabular_header {
   bool initialized;
 
   std::vector<split_range> split_points;
-  std::vector<split_range> splits_in_progress;
 
   cls_tabular_header() {
     initialized = false;
@@ -145,22 +124,85 @@ static int write_header(cls_method_context_t hctx, cls_tabular_header& header)
  * This interface allows a daemon to read a random split from 
  * this object.
  */
-static int cls_tabluar_get_split(cls_method_context_t hctx,
+static int cls_tabluar_get_split(cls_method_context_t hctx, 
 bufferlist *in, bufferlist *out) {
-    
-  split_range split = split_points.pop();  
-  splits_in_progress.push(split);
+  bool match;
+  int fresh_split_index = -1;
+  
+  // loop to check for a split that has not been 
+  // computed by the daemon before
+  for (i = 0; i < split_points.size(); i++) {
+    match = false;
+    for (j = 0; j < finished_splits.size(); j++) {
+      if (i == finished_splits[j]){
+        match = true;
+        break;
+      }
+    }
+    if (match == false) {
+      fresh_split_index = i;
+      break;
+    }
+  }  
+  
+  // all the splits have already been taken care of
+  // no more work needs to be done
+  if (fresh_split_index == -1) {
+    return -1;
+  }
+  
+  // If a fresh split (fresh meaning it is in the 
+  // header and the daemon has not worked on it yet)
+  // has been found, then we want to work on that 
+  // split range
+  split_range split = split_points[fresh_split_index];  
+  cls_tabular_get_split_op split_ret;
+  
+  uint64_t size;
+  int r = cls_cxx_stat(hctx, &size, NULL);
+  if (r < 0)
+    return r;
+
+  if (size == 0)
+    return -ENOENT;
   
   // read data in the range 
-  bufferlist data;
-  ret = cls_cxx_read(hctx, split.lower, split.upper, data);
+  bufferlist bl_data;
+  ret = cls_cxx_read(hctx, 0, size, &bl_data);
   
-  split_with_data split_data;
-  split_data.data = data;
-  split_data.split = split;
+  std::map<std::string, ceph::bufferedlist> data;
+  try {
+    bufferlist::iterator iter = bl_data.begin();
+    ::decode(data, iter);
+  } catch (const buffer::error &err) {
+    return -EIO;
+  }
+  
+  // the split we return to the daemon will have a min, max
+  // an id (this is just the position of the split in the 
+  // vector, which is unique since the vector is append only)
+  // and the data. 
+  split_ret.min = split.min;
+  split_ret.max = split.max;
+  split_ret.id  = fresh_split_index;
+  
+  // we have read all the data in the object, and now
+  // we need to trim it to only the data in the range
+  // specified by the split. 
+  std::map<std::string, ceph::bufferedlist>::iterator min_it;
+  std::map<std::string, ceph::bufferedlist>::iterator max_it;
+  
+  min_it = data.begin();
+  max_it = data.find(split.min);
+  data.erase(min_it, max_it);
+  min_it = data.find(split.max);
+  max_it = data.end();
+  data.erase(min_it, max_it);
+  
+  split_ret.data = data;
     
-  out->append(split_data);
-    
+  ::encode(split_ret, *out);
+  
   return 0;
 }
  

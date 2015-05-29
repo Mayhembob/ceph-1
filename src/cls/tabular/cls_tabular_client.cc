@@ -5,10 +5,12 @@
 
 
 
-struct split_with_data {
-  split_range split;
-  //bufferedlist data;
-  std::map<std::string, ceph::bufferedlist> data;
+void cls_tabular_get_split(librados::ObjectWriteOperation& op, 
+std::vector<uint64_t> finished_splits) {
+  librados::bufferlist in;
+  ::encode(finished_splits, in);
+  op.exec("tabular", "get_split", in);
+}
 
 /*
  * Take a set of entries and prepare the operation such that when it is

@@ -4,6 +4,33 @@
 #include "include/types.h"
 #include "cls_tabular_types.h"
 
+struct cls_tabular_get_split_op {
+  uint64_t min;
+  uint64_t max;
+  uint64_t id;
+  std::map<std::string, ceph::bufferedlist> data;
+  
+  cls_tabular_get_split_op() {}
+  
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(min, bl);
+    ::encode(max, bl);
+    ::encode(id, bl);
+    ::encode(data, bl);
+    ENCODE_FINISH(bl);
+  }
+  
+  void decode(bufferlist::iterator& bl) {
+    DECODE_START(1, bl);
+    ::decode(min, bl);
+    ::decode(max, bl);
+    ::decode(id, bl);
+    ::decode(data, bl);
+    DECODE_FINISH(bl);
+  }
+};
+
 struct cls_tabular_put_op {
   vector<string> entries;
 

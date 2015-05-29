@@ -6,6 +6,9 @@
 
 #include "include/rados/librados.hpp"
 
+void cls_tabular_get_split(librados::ObjectWriteOperation& op, 
+std::vector<uint64_t> finished_splits);
+
 void cls_tabular_put(librados::ObjectWriteOperation& op,
     std::vector<std::string>& entries);
 
